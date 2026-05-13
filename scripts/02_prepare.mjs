@@ -1,131 +1,173 @@
 /**
  * Script to transform raw AirNow data files into BigQuery-compatible formats.
  *
- * This script reads the raw .dat files downloaded by 01_extract.mjs and converts
- * them into CSV, JSON-L, and Parquet formats suitable for loading into
- * BigQuery as external tables.
- *
- * Hourly observation data is converted to: CSV, JSON-L, Parquet
- * Site location data is converted to: CSV, JSON-L, GeoParquet (with point geometry)
+ * Converts raw .dat files from data/raw/ into CSV, JSON-L, and Parquet
+ * formats under data/prepared/. Uses DuckDB for all format conversions.
+ * The spatial extension is used to produce GeoParquet for site locations.
  *
  * Usage:
  *     node scripts/02_prepare.mjs
  */
 
 import path from 'path';
+import fs from 'fs/promises';
 import { fileURLToPath } from 'url';
+import { DuckDBInstance } from '@duckdb/node-api';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const DATA_DIR = path.resolve(__dirname, '..', 'data');
 
-const HOURLY_COLUMNS = [
-  'valid_date',
-  'valid_time',
-  'aqsid',
-  'site_name',
-  'gmt_offset',
-  'parameter_name',
-  'reporting_units',
-  'value',
-  'data_source',
-];
+// Column definitions for the pipe-delimited hourly files (no header row)
+const HOURLY_COLUMNS = {
+  valid_date: 'VARCHAR',
+  valid_time: 'VARCHAR',
+  aqsid: 'VARCHAR',
+  site_name: 'VARCHAR',
+  gmt_offset: 'INTEGER',
+  parameter_name: 'VARCHAR',
+  reporting_units: 'VARCHAR',
+  value: 'DOUBLE',
+  data_source: 'VARCHAR',
+};
 
+let conn;
+
+async function initDuckDB() {
+  const instance = await DuckDBInstance.create(':memory:');
+  conn = await instance.connect();
+  await conn.run("INSTALL spatial; LOAD spatial;");
+}
+
+// Returns the list of 24 raw hourly file paths for a given date
+function getHourlyFilePaths(dateStr) {
+  const [year, month, day] = dateStr.split('-');
+  const compact = `${year}${month}${day}`;
+  const rawDir = path.join(DATA_DIR, 'raw', dateStr);
+  return Array.from({ length: 24 }, (_, hour) => {
+    const hourStr = String(hour).padStart(2, '0');
+    return path.join(rawDir, `HourlyData_${compact}${hourStr}.dat`);
+  });
+}
+
+// DuckDB SQL fragment to read all 24 hourly files for a date as one table
+function hourlyReadExpr(dateStr) {
+  const files = getHourlyFilePaths(dateStr).map(f => `'${f}'`).join(', ');
+  const cols = Object.entries(HOURLY_COLUMNS)
+    .map(([k, v]) => `'${k}': '${v}'`)
+    .join(', ');
+  return `read_csv([${files}], sep='|', header=false, columns={${cols}}, ignore_errors=true)`;
+}
+
+// DuckDB SQL fragment to read the site locations file deduplicated by AQSID
+function sitesReadExpr(sitesFile) {
+  return `(
+    SELECT * EXCLUDE (rn)
+    FROM (
+      SELECT *, ROW_NUMBER() OVER (PARTITION BY AQSID ORDER BY 1) AS rn
+      FROM read_csv('${sitesFile}', sep='|', header=true, ignore_errors=true)
+    )
+    WHERE rn = 1
+  )`;
+}
+
+// Returns the most recent available site locations file
+async function getMostRecentSitesFile() {
+  for (let day = 31; day >= 1; day--) {
+    const dateStr = `2024-07-${String(day).padStart(2, '0')}`;
+    const p = path.join(DATA_DIR, 'raw', dateStr, 'Monitoring_Site_Locations_V2.dat');
+    try {
+      await fs.access(p);
+      return p;
+    } catch {}
+  }
+  throw new Error('No site locations file found in data/raw/');
+}
 
 // --- Hourly observation data ---
 
-/**
- * Convert raw hourly .dat files for a date to a single CSV file.
- *
- * Reads all 24 HourlyData_*.dat files from data/raw/<date>/,
- * combines them into a single dataset, assigns column names,
- * and writes to data/prepared/hourly/<date>.csv.
- *
- * @param {string} dateStr - Date string in 'YYYY-MM-DD' format.
- */
 async function prepareHourlyCsv(dateStr) {
-  throw new Error('Implement this function.');
+  const outPath = path.join(DATA_DIR, 'prepared', 'hourly', `${dateStr}.csv`);
+  await fs.mkdir(path.dirname(outPath), { recursive: true });
+  await conn.run(`
+    COPY (SELECT * FROM ${hourlyReadExpr(dateStr)})
+    TO '${outPath}' (FORMAT CSV, HEADER true)
+  `);
 }
 
-/**
- * Convert raw hourly .dat files for a date to newline-delimited JSON.
- *
- * Reads all 24 HourlyData_*.dat files from data/raw/<date>/,
- * combines them, and writes one JSON object per line to
- * data/prepared/hourly/<date>.jsonl.
- *
- * @param {string} dateStr - Date string in 'YYYY-MM-DD' format.
- */
 async function prepareHourlyJsonl(dateStr) {
-  throw new Error('Implement this function.');
+  const outPath = path.join(DATA_DIR, 'prepared', 'hourly', `${dateStr}.jsonl`);
+  await fs.mkdir(path.dirname(outPath), { recursive: true });
+  await conn.run(`
+    COPY (SELECT * FROM ${hourlyReadExpr(dateStr)})
+    TO '${outPath}' (FORMAT JSON)
+  `);
 }
 
-/**
- * Convert raw hourly .dat files for a date to Parquet format.
- *
- * Reads all 24 HourlyData_*.dat files from data/raw/<date>/,
- * combines them, and writes to data/prepared/hourly/<date>.parquet.
- *
- * @param {string} dateStr - Date string in 'YYYY-MM-DD' format.
- */
 async function prepareHourlyParquet(dateStr) {
-  throw new Error('Implement this function.');
+  const outPath = path.join(DATA_DIR, 'prepared', 'hourly', `${dateStr}.parquet`);
+  await fs.mkdir(path.dirname(outPath), { recursive: true });
+  await conn.run(`
+    COPY (SELECT * FROM ${hourlyReadExpr(dateStr)})
+    TO '${outPath}' (FORMAT PARQUET)
+  `);
 }
-
 
 // --- Site location data ---
 
-/**
- * Convert monitoring site locations to CSV.
- *
- * Reads the Monitoring_Site_Locations_V2.dat file, deduplicates
- * so there is one row per site (the raw file has one row per
- * site-parameter combination), and writes to
- * data/prepared/sites/site_locations.csv.
- *
- * Uses the most recent date's file from data/raw/.
- */
-async function prepareSiteLocationsCsv() {
-  throw new Error('Implement this function.');
+async function prepareSiteLocationsCsv(sitesFile) {
+  const outPath = path.join(DATA_DIR, 'prepared', 'sites', 'site_locations.csv');
+  await fs.mkdir(path.dirname(outPath), { recursive: true });
+  await conn.run(`
+    COPY (SELECT * FROM ${sitesReadExpr(sitesFile)})
+    TO '${outPath}' (FORMAT CSV, HEADER true)
+  `);
 }
 
-/**
- * Convert monitoring site locations to newline-delimited JSON.
- *
- * Reads the Monitoring_Site_Locations_V2.dat file, deduplicates
- * so there is one row per site (the raw file has one row per
- * site-parameter combination), and writes to
- * data/prepared/sites/site_locations.jsonl.
- *
- * Uses the most recent date's file from data/raw/.
- */
-async function prepareSiteLocationsJsonl() {
-  throw new Error('Implement this function.');
+async function prepareSiteLocationsJsonl(sitesFile) {
+  const outPath = path.join(DATA_DIR, 'prepared', 'sites', 'site_locations.jsonl');
+  await fs.mkdir(path.dirname(outPath), { recursive: true });
+  await conn.run(`
+    COPY (SELECT * FROM ${sitesReadExpr(sitesFile)})
+    TO '${outPath}' (FORMAT JSON)
+  `);
 }
 
-/**
- * Convert monitoring site locations to GeoParquet with point geometry.
- *
- * Reads the Monitoring_Site_Locations_V2.dat file, deduplicates
- * so there is one row per site (the raw file has one row per
- * site-parameter combination), creates point geometries from
- * latitude and longitude, and writes to
- * data/prepared/sites/site_locations.geoparquet.
- *
- * Uses the most recent date's file from data/raw/.
- */
-async function prepareSiteLocationsGeoparquet() {
-  throw new Error('Implement this function.');
+async function prepareSiteLocationsGeoparquet(sitesFile) {
+  const outPath = path.join(DATA_DIR, 'prepared', 'sites', 'site_locations.geoparquet');
+  await fs.mkdir(path.dirname(outPath), { recursive: true });
+  // Keep all columns; add a geometry point column from Longitude/Latitude.
+  // DuckDB spatial extension writes proper GeoParquet metadata automatically.
+  await conn.run(`
+    COPY (
+      SELECT
+        * EXCLUDE (rn),
+        ST_Point(
+          TRY_CAST(Longitude AS DOUBLE),
+          TRY_CAST(Latitude AS DOUBLE)
+        ) AS geometry
+      FROM (
+        SELECT *, ROW_NUMBER() OVER (PARTITION BY AQSID ORDER BY 1) AS rn
+        FROM read_csv('${sitesFile}', sep='|', header=true, ignore_errors=true)
+      )
+      WHERE rn = 1
+    )
+    TO '${outPath}' (FORMAT PARQUET)
+  `);
 }
 
+// --- Main ---
 
-// Prepare site locations (only need to do this once)
+await initDuckDB();
+
+const sitesFile = await getMostRecentSitesFile();
+
 console.log('Preparing site locations...');
-await prepareSiteLocationsCsv();
-await prepareSiteLocationsJsonl();
-await prepareSiteLocationsGeoparquet();
+await prepareSiteLocationsCsv(sitesFile);
+await prepareSiteLocationsJsonl(sitesFile);
+await prepareSiteLocationsGeoparquet(sitesFile);
+console.log('  Site locations done.');
 
-// Prepare hourly data for each day in July 2024 (backfill)
 const startDate = new Date('2024-07-01');
 const endDate = new Date('2024-07-31');
 

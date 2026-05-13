@@ -1,45 +1,56 @@
 /**
  * Script to upload prepared data files to Google Cloud Storage (GCS).
  *
- * This script uploads the transformed files from data/prepared/ to a
- * GCS bucket, preserving the folder structure so that BigQuery can
- * use wildcard URIs to create external tables across multiple files.
+ * Uploads the contents of data/prepared/ to a GCS bucket, preserving
+ * the folder structure under the prefix air_quality/.
  *
  * Prerequisites:
- *     - Run `gcloud auth application-default login` to authenticate.
- *     - Create a GCS bucket (manually or in this script).
+ *     gcloud auth application-default login
  *
  * Usage:
  *     node scripts/03_upload_to_gcs.mjs
  */
 
 import path from 'path';
+import fs from 'fs/promises';
 import { fileURLToPath } from 'url';
+import { Storage } from '@google-cloud/storage';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const DATA_DIR = path.resolve(__dirname, '..', 'data');
 
-// TODO: Update this to your bucket name
-const BUCKET_NAME = 'musa5090-s26-yourname-data';
+const PROJECT_ID = 'geocloudassignment03';
+const BUCKET_NAME = 'musa5090-s26-demi-yang-data';
 
-/**
- * Upload all prepared data files to GCS.
- *
- * Uploads the contents of data/prepared/ to the GCS bucket,
- * preserving the folder structure under a prefix of 'air_quality/'.
- *
- * Expected GCS structure:
- *     gs://<bucket>/air_quality/hourly/2024-07-01.csv
- *     gs://<bucket>/air_quality/hourly/2024-07-01.jsonl
- *     gs://<bucket>/air_quality/hourly/2024-07-01.parquet
- *     ...
- *     gs://<bucket>/air_quality/sites/site_locations.csv
- *     gs://<bucket>/air_quality/sites/site_locations.jsonl
- *     gs://<bucket>/air_quality/sites/site_locations.geoparquet
- */
 async function uploadPreparedData() {
-  throw new Error('Implement this function to upload files to GCS.');
+  const storage = new Storage({ projectId: PROJECT_ID });
+  const bucket = storage.bucket(BUCKET_NAME);
+
+  // Create bucket if it doesn't exist yet
+  const [exists] = await bucket.exists();
+  if (!exists) {
+    await bucket.create({ location: 'US' });
+    console.log(`Created bucket: gs://${BUCKET_NAME}`);
+  }
+
+  // Recursively upload every file under data/prepared/
+  async function uploadDir(localDir, gcsPrefix) {
+    const entries = await fs.readdir(localDir, { withFileTypes: true });
+    for (const entry of entries) {
+      const localPath = path.join(localDir, entry.name);
+      const gcsPath = `${gcsPrefix}/${entry.name}`;
+      if (entry.isDirectory()) {
+        await uploadDir(localPath, gcsPath);
+      } else {
+        await bucket.upload(localPath, { destination: gcsPath });
+        console.log(`  Uploaded: gs://${BUCKET_NAME}/${gcsPath}`);
+      }
+    }
+  }
+
+  const preparedDir = path.join(DATA_DIR, 'prepared');
+  await uploadDir(preparedDir, 'air_quality');
 }
 
 await uploadPreparedData();

@@ -1,0 +1,7 @@
+{
+  "type": "module",
+  "dependencies": {
+    "@duckdb/node-api": "1.5.2-r.1",
+    "@google-cloud/storage": "^7.15.0"
+  }
+}

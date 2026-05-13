@@ -1,45 +1,103 @@
 -- Part 4: Create BigQuery external tables
 --
--- Create these tables in a dataset named `air_quality`.
--- Use wildcard URIs for the hourly data tables so a single table
--- spans all 31 days of files.
---
--- After creating the tables, verify they work by running:
---     SELECT count(*) FROM air_quality.<table_name>;
+-- Run these statements in the BigQuery console (project: geocloudassignment03).
+-- Make sure the dataset `air_quality` exists first:
+--   CREATE SCHEMA IF NOT EXISTS `geocloudassignment03.air_quality`;
 
 
+-- ============================================================
 -- Hourly Observations — CSV
--- TODO: Create external table `hourly_observations_csv`
--- pointing to gs://<your-bucket>/air_quality/hourly/*.csv
+-- ============================================================
+CREATE OR REPLACE EXTERNAL TABLE `geocloudassignment03.air_quality.hourly_observations_csv`
+(
+  valid_date      STRING,
+  valid_time      STRING,
+  aqsid           STRING,
+  site_name       STRING,
+  gmt_offset      INT64,
+  parameter_name  STRING,
+  reporting_units STRING,
+  value           FLOAT64,
+  data_source     STRING
+)
+OPTIONS (
+  format           = 'CSV',
+  uris             = ['gs://musa5090-s26-demi-yang-data/air_quality/hourly/*.csv'],
+  skip_leading_rows = 1
+);
 
 
+-- ============================================================
 -- Hourly Observations — JSON-L
--- TODO: Create external table `hourly_observations_jsonl`
--- pointing to gs://<your-bucket>/air_quality/hourly/*.jsonl
+-- ============================================================
+CREATE OR REPLACE EXTERNAL TABLE `geocloudassignment03.air_quality.hourly_observations_jsonl`
+OPTIONS (
+  format = 'NEWLINE_DELIMITED_JSON',
+  uris   = ['gs://musa5090-s26-demi-yang-data/air_quality/hourly/*.jsonl']
+);
 
 
+-- ============================================================
 -- Hourly Observations — Parquet
--- TODO: Create external table `hourly_observations_parquet`
--- pointing to gs://<your-bucket>/air_quality/hourly/*.parquet
+-- ============================================================
+CREATE OR REPLACE EXTERNAL TABLE `geocloudassignment03.air_quality.hourly_observations_parquet`
+OPTIONS (
+  format = 'PARQUET',
+  uris   = ['gs://musa5090-s26-demi-yang-data/air_quality/hourly/*.parquet']
+);
 
 
+-- ============================================================
 -- Site Locations — CSV
--- TODO: Create external table `site_locations_csv`
--- pointing to gs://<your-bucket>/air_quality/sites/site_locations.csv
+-- ============================================================
+CREATE OR REPLACE EXTERNAL TABLE `geocloudassignment03.air_quality.site_locations_csv`
+OPTIONS (
+  format            = 'CSV',
+  uris              = ['gs://musa5090-s26-demi-yang-data/air_quality/sites/site_locations.csv'],
+  skip_leading_rows = 1,
+  autodetect        = true
+);
 
 
+-- ============================================================
 -- Site Locations — JSON-L
--- TODO: Create external table `site_locations_jsonl`
--- pointing to gs://<your-bucket>/air_quality/sites/site_locations.jsonl
+-- ============================================================
+CREATE OR REPLACE EXTERNAL TABLE `geocloudassignment03.air_quality.site_locations_jsonl`
+OPTIONS (
+  format = 'NEWLINE_DELIMITED_JSON',
+  uris   = ['gs://musa5090-s26-demi-yang-data/air_quality/sites/site_locations.jsonl']
+);
 
 
+-- ============================================================
 -- Site Locations — GeoParquet
--- TODO: Create external table `site_locations_geoparquet`
--- pointing to gs://<your-bucket>/air_quality/sites/site_locations.geoparquet
+-- ============================================================
+CREATE OR REPLACE EXTERNAL TABLE `geocloudassignment03.air_quality.site_locations_geoparquet`
+OPTIONS (
+  format = 'PARQUET',
+  uris   = ['gs://musa5090-s26-demi-yang-data/air_quality/sites/site_locations.geoparquet']
+);
 
 
--- Cross-table join query
--- Write a query that joins hourly observations with site locations
--- to get latitude/longitude for each observation. For example,
--- find the average PM2.5 value by state for a single day.
+-- ============================================================
+-- Verify row counts are consistent across formats
+-- ============================================================
+-- SELECT count(*) FROM `geocloudassignment03.air_quality.hourly_observations_csv`;
+-- SELECT count(*) FROM `geocloudassignment03.air_quality.hourly_observations_jsonl`;
+-- SELECT count(*) FROM `geocloudassignment03.air_quality.hourly_observations_parquet`;
 
+
+-- ============================================================
+-- Cross-table join: average PM2.5 by state for 2024-07-01
+-- ============================================================
+SELECT
+  s.StateAbbreviation                AS state,
+  ROUND(AVG(h.value), 2)             AS avg_pm25,
+  COUNT(*)                           AS observation_count
+FROM `geocloudassignment03.air_quality.hourly_observations_parquet` AS h
+JOIN `geocloudassignment03.air_quality.site_locations_geoparquet`   AS s
+  ON h.aqsid = s.AQSID
+WHERE h.valid_date     = '07/01/24'
+  AND h.parameter_name = 'PM2.5'
+GROUP BY state
+ORDER BY avg_pm25 DESC;

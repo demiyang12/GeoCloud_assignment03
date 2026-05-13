@@ -1,37 +1,56 @@
 /**
  * Stretch challenge: Upload merged hourly + site location data to GCS.
  *
- * This script uploads the denormalized (merged) files produced by
- * 06_prepare.mjs to GCS with a hive-partitioned folder structure.
+ * Uploads files from data/prepared/hourly_with_sites/ using hive-partitioned paths:
+ *     air_quality/hourly_with_sites/csv/airnow_date=2024-07-01/data.csv
+ *     air_quality/hourly_with_sites/jsonl/airnow_date=2024-07-01/data.jsonl
+ *     air_quality/hourly_with_sites/geoparquet/airnow_date=2024-07-01/data.geoparquet
  *
  * Prerequisites:
- *     - Run `gcloud auth application-default login` to authenticate.
- *     - Part 6 prepare script (06_prepare.mjs) should be complete.
+ *     node scripts/06_prepare.mjs must be complete.
+ *     gcloud auth application-default login
  *
  * Usage:
  *     node scripts/06_upload_to_gcs.mjs
  */
 
 import path from 'path';
+import fs from 'fs/promises';
 import { fileURLToPath } from 'url';
+import { Storage } from '@google-cloud/storage';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const DATA_DIR = path.resolve(__dirname, '..', 'data');
 
-// TODO: Update this to your bucket name
-const BUCKET_NAME = 'musa5090-s26-yourname-data';
+const PROJECT_ID = 'geocloudassignment03';
+const BUCKET_NAME = 'musa5090-s26-demi-yang-data';
 
-/**
- * Upload merged hourly data to GCS with hive-partitioned folder structure.
- *
- * Expected GCS structure:
- *     gs://<bucket>/air_quality/hourly_with_sites/csv/airnow_date=2024-07-01/data.csv
- *     gs://<bucket>/air_quality/hourly_with_sites/jsonl/airnow_date=2024-07-01/data.jsonl
- *     gs://<bucket>/air_quality/hourly_with_sites/geoparquet/airnow_date=2024-07-01/data.geoparquet
- */
+const EXT_TO_FOLDER = {
+  csv:        'csv',
+  jsonl:      'jsonl',
+  geoparquet: 'geoparquet',
+};
+
 async function uploadMergedData() {
-  throw new Error('Implement this function to upload merged data to GCS.');
+  const storage = new Storage({ projectId: PROJECT_ID });
+  const bucket = storage.bucket(BUCKET_NAME);
+
+  const mergedDir = path.join(DATA_DIR, 'prepared', 'hourly_with_sites');
+  const entries = await fs.readdir(mergedDir);
+
+  for (const filename of entries) {
+    const match = filename.match(/^(\d{4}-\d{2}-\d{2})\.(csv|jsonl|geoparquet)$/);
+    if (!match) continue;
+
+    const [, date, ext] = match;
+    const formatFolder = EXT_TO_FOLDER[ext];
+    const gcsPath = `air_quality/hourly_with_sites/${formatFolder}/airnow_date=${date}/data.${ext}`;
+    const localPath = path.join(mergedDir, filename);
+
+    await bucket.upload(localPath, { destination: gcsPath });
+    console.log(`  Uploaded: gs://${BUCKET_NAME}/${gcsPath}`);
+  }
 }
 
 await uploadMergedData();
